@@ -640,7 +640,7 @@ public class SolrIndexSearcher extends LucureIndexSearcher implements Closeable,
         return;
       }
     }
-    getIndexReader().document(n, visitor);
+    super.doc(n, visitor);
   }
   
   /** Executes a stored field visitor against a hit from the document cache */
@@ -696,10 +696,10 @@ public class SolrIndexSearcher extends LucureIndexSearcher implements Closeable,
     }
 
     if(!enableLazyFieldLoading || fields == null) {
-      d = getIndexReader().document(i);
+      d = super.doc(i);
     } else {
       final SetNonLazyFieldSelector visitor = new SetNonLazyFieldSelector(fields, getIndexReader(), i);
-      getIndexReader().document(i, visitor);
+      super.doc(i, visitor);
       d = visitor.doc;
     }
 

@@ -36,6 +36,7 @@ import org.apache.lucene.search.Query;
 import org.apache.lucene.search.SortField;
 import org.apache.lucene.search.similarities.Similarity;
 import org.apache.solr.common.params.SolrParams;
+import org.apache.solr.common.util.SimpleOrderedMap;
 import org.apache.solr.response.TextResponseWriter;
 import org.apache.solr.search.QParser;
 import org.slf4j.Logger;
@@ -130,10 +131,14 @@ public class RestrictedSolrFieldType extends AbstractSubTypeFieldType {
   public void write(
       TextResponseWriter writer, String name, IndexableField f)
       throws IOException {
-    //TODO: Write out Column Visibility somehow too
-    subType.write(writer, name, f);
     if(f instanceof RestrictedField) {
-      writer.writeStr("cv", ((RestrictedField)f).getColumnVisibility().toString(), false);
+      RestrictedField restrictedField = (RestrictedField) f;
+      SimpleOrderedMap<Object> map = new SimpleOrderedMap<>();
+      map.add("val", RestrictedField.toObject(restrictedField));
+      map.add("vis", new String(restrictedField.getColumnVisibility().getExpression(), "UTF-8"));
+      writer.writeNamedList(name, map);
+    } else {
+      subType.write(writer, name, f);
     }
   }
 
