@@ -1,5 +1,6 @@
 package org.apache.solr.core;
 
+import com.lucure.core.codec.LucureCodec;
 import org.apache.lucene.codecs.Codec;
 import org.apache.lucene.codecs.DocValuesFormat;
 import org.apache.lucene.codecs.PostingsFormat;
@@ -51,30 +52,7 @@ public class SchemaCodecFactory extends CodecFactory implements SolrCoreAware {
   @Override
   public void init(NamedList args) {
     super.init(args);
-    codec = new Lucene410Codec() {
-      @Override
-      public PostingsFormat getPostingsFormatForField(String field) {
-        final SchemaField schemaField = core.getLatestSchema().getFieldOrNull(field);
-        if (schemaField != null) {
-          String postingsFormatName = schemaField.getType().getPostingsFormat();
-          if (postingsFormatName != null) {
-            return PostingsFormat.forName(postingsFormatName);
-          }
-        }
-        return super.getPostingsFormatForField(field);
-      }
-      @Override
-      public DocValuesFormat getDocValuesFormatForField(String field) {
-        final SchemaField schemaField = core.getLatestSchema().getFieldOrNull(field);
-        if (schemaField != null) {
-          String docValuesFormatName = schemaField.getType().getDocValuesFormat();
-          if (docValuesFormatName != null) {
-            return DocValuesFormat.forName(docValuesFormatName);
-          }
-        }
-        return super.getDocValuesFormatForField(field);
-      }
-    };
+    codec = new LucureCodec();
   }
 
   @Override

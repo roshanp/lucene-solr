@@ -109,6 +109,8 @@ import org.apache.solr.update.SolrIndexConfig;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import com.lucure.core.LucureIndexSearcher;
+
 
 /**
  * SolrIndexSearcher adds schema awareness and caching functionality
@@ -117,7 +119,7 @@ import org.slf4j.LoggerFactory;
  *
  * @since solr 0.9
  */
-public class SolrIndexSearcher extends IndexSearcher implements Closeable,SolrInfoMBean {
+public class SolrIndexSearcher extends LucureIndexSearcher implements Closeable,SolrInfoMBean {
 
   // These should *only* be used for debugging or monitoring purposes
   public static final AtomicLong numOpens = new AtomicLong();
@@ -189,7 +191,7 @@ public class SolrIndexSearcher extends IndexSearcher implements Closeable,SolrIn
    */
   private void buildAndRunCollectorChain(QueryResult qr, Query query, Filter luceneFilter,
       Collector collector, QueryCommand cmd, DelegatingCollector postFilter) throws IOException {
-    
+
     final boolean terminateEarly = (cmd.getFlags() & TERMINATE_EARLY) == TERMINATE_EARLY;
     if (terminateEarly) {
       collector = new EarlyTerminatingCollector(collector, cmd.len);

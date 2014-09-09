@@ -32,6 +32,9 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.regex.Pattern;
 
+import com.lucure.core.AuthorizationsHolder;
+import com.lucure.core.query.AuthQuery;
+import org.apache.accumulo.core.security.Authorizations;
 import org.apache.commons.lang.StringUtils;
 import org.apache.lucene.index.AtomicReaderContext;
 import org.apache.lucene.index.IndexReaderContext;
@@ -151,7 +154,15 @@ public class QueryComponent extends SearchComponent
         q = new BooleanQuery();
       }
 
-      rb.setQuery( q );
+      //Get passed in authorizations
+      String auth = params.get("auth");
+      Authorizations authorizations = Authorizations.EMPTY;
+      if(auth != null) {
+        authorizations = new Authorizations(auth.split(","));
+      }
+
+      rb.setQuery(new AuthQuery(q, authorizations));
+      AuthorizationsHolder.threadAuthorizations.set(new AuthorizationsHolder(authorizations));
 
       String rankQueryString = rb.req.getParams().get(CommonParams.RQ);
       if(rankQueryString != null) {
