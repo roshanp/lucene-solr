@@ -260,7 +260,7 @@ public class SolrIndexSearcher extends LucureIndexSearcher implements Closeable,
     useFilterForSortedQuery = solrConfig.useFilterForSortedQuery;
     enableLazyFieldLoading = solrConfig.enableLazyFieldLoading;
     
-    cachingEnabled=enableCache;
+    cachingEnabled=false; //TODO: Caching is always false since it could bypass authorizations currently
     if (cachingEnabled) {
       ArrayList<SolrCache> clist = new ArrayList<>();
       fieldValueCache = solrConfig.fieldValueCacheConfig==null ? null : solrConfig.fieldValueCacheConfig.newInstance();

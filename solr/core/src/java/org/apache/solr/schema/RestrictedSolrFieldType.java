@@ -17,6 +17,10 @@ package org.apache.solr.schema;
  * limitations under the License.
  */
 
+import java.io.IOException;
+import java.util.List;
+import java.util.regex.PatternSyntaxException;
+
 import com.google.common.base.Function;
 import com.google.common.base.Predicates;
 import com.google.common.collect.FluentIterable;
@@ -33,151 +37,168 @@ import org.apache.lucene.search.SortField;
 import org.apache.lucene.search.similarities.Similarity;
 import org.apache.solr.common.params.SolrParams;
 import org.apache.solr.response.TextResponseWriter;
-import org.apache.solr.schema.AbstractSubTypeFieldType;
-import org.apache.solr.schema.SchemaField;
-import org.apache.solr.schema.SimilarityFactory;
 import org.apache.solr.search.QParser;
-
-import java.io.IOException;
-import java.util.List;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  */
 public class RestrictedSolrFieldType extends AbstractSubTypeFieldType {
 
-    public static final char VISIBILITY_DELIM = ';';
-    public static final ColumnVisibility EMPTY_VISIBILITY =
-      new ColumnVisibility();
+  private static final Logger LOG = LoggerFactory.getLogger(RestrictedSolrFieldType.class);
 
-    @Override
-    public List<IndexableField> createFields(
+  public static final ColumnVisibility EMPTY_VISIBILITY =
+      new ColumnVisibility();
+  public static final char VISIBILITY_LOWER_BOUND = ']';
+  public static final char VISIBILITY_UPPER_BOUND = '[';
+
+  @Override
+  public List<IndexableField> createFields(
       final SchemaField field, Object value, float boost) {
 
-        String val_str = value.toString();
-        int visibilityLoc = val_str.lastIndexOf(VISIBILITY_DELIM);
-        ColumnVisibility cv = EMPTY_VISIBILITY;
+    String val_str = value.toString();
+    ColumnVisibility cv = EMPTY_VISIBILITY;
+    if(val_str != null && val_str.length() > 0) {
+      //Column Visibility will be at the end of the string with the form:
+      //  somestring[ColumnVisibility]
+      if(val_str.charAt(val_str.length() - 1) == VISIBILITY_LOWER_BOUND) {
+        int visibilityLoc = val_str.lastIndexOf(VISIBILITY_UPPER_BOUND);
         if(visibilityLoc != -1) {
-            //parse CV
-            cv = new ColumnVisibility(val_str.substring(visibilityLoc + 1, val_str.length()));
-            val_str = val_str.substring(0, visibilityLoc);
+          //includes column visibility
+          val_str = val_str.substring(0, visibilityLoc);
+          String cv_str = val_str.substring(visibilityLoc + 1, val_str.length() - 1);
+          try {
+            cv = new ColumnVisibility(cv_str);
+          } catch(PatternSyntaxException pe) {
+            LOG.warn("Column Visibility String["+cv_str+"] is not correctly formed", pe);
+          }
         }
-        List<IndexableField> fields = subType.createFields(field, val_str,
-                                                           boost);
-        final ColumnVisibility finalCv = cv;
-        return FluentIterable.from(fields).transform(new Function<IndexableField, IndexableField>() {
-            @Override
-            public IndexableField apply(IndexableField input) {
-                if (field.hasDocValues() && input.fieldType().docValueType() == null) {
-                    // restricted fields cannot handle docvalues at the moment
-                    throw new UnsupportedOperationException("This field type does not support doc values: " + this);
-                }
-                Object value = input.stringValue();
-                if(value == null) {
-                    value = input.binaryValue();
-                    if(value == null) {
-                        value = input.numericValue();
-                        if(value == null) {
-                            value = input.readerValue();
-                        }
-                    }
-                }
-
-                if(value == null) {
-                    return null;
-                }
-
-                //TODO: Fix cast to FieldType
-                FieldType fieldType = (FieldType) input.fieldType();
-
-                //indexOptions has to be at least Freqs and Positions
-                FieldInfo.IndexOptions indexOptions = fieldType.indexOptions();
-                switch(indexOptions) {
-                    case DOCS_ONLY:
-                    case DOCS_AND_FREQS:
-                        indexOptions =
-                          FieldInfo.IndexOptions.DOCS_AND_FREQS_AND_POSITIONS;
-                        break;
-                    default:
-                        break;
-                }
-
-                fieldType.setIndexOptions(indexOptions);
-                return new RestrictedField(input.name(), value, fieldType,
-                                           finalCv);
-            }
-        }).filter(Predicates.notNull()).toList();
+      }
     }
 
-    @Override
-    public void write(
+    LOG.debug("Saving field[{}] with value[{}], boost[{}], and ColumnVisibility[{}]",
+        field, val_str, boost, cv);
+
+    List<IndexableField> fields = subType.createFields(field, val_str,
+        boost);
+    final ColumnVisibility finalCv = cv;
+    return FluentIterable.from(fields).transform(new Function<IndexableField, IndexableField>() {
+      @Override
+      public IndexableField apply(IndexableField input) {
+        if (field.hasDocValues() && input.fieldType().docValueType() == null) {
+          // restricted fields cannot handle docvalues at the moment
+          throw new UnsupportedOperationException("This field type does not support doc values: " + this);
+        }
+        Object value = input.stringValue();
+        if (value == null) {
+          value = input.binaryValue();
+          if (value == null) {
+            value = input.numericValue();
+            if (value == null) {
+              value = input.readerValue();
+            }
+          }
+        }
+
+        if (value == null) {
+          return null;
+        }
+
+        //TODO: Fix cast to FieldType
+        FieldType fieldType = (FieldType) input.fieldType();
+
+        //indexOptions has to be at least Freqs and Positions
+        FieldInfo.IndexOptions indexOptions = fieldType.indexOptions();
+        switch (indexOptions) {
+          case DOCS_ONLY:
+          case DOCS_AND_FREQS:
+            indexOptions =
+                FieldInfo.IndexOptions.DOCS_AND_FREQS_AND_POSITIONS;
+            break;
+          default:
+            break;
+        }
+
+        fieldType.setIndexOptions(indexOptions);
+        return new RestrictedField(input.name(), value, fieldType,
+            finalCv);
+      }
+    }).filter(Predicates.notNull()).toList();
+  }
+
+  @Override
+  public void write(
       TextResponseWriter writer, String name, IndexableField f)
       throws IOException {
-        //TODO: Write out Column Visibility somehow too
-        subType.write(writer, name, f);
+    //TODO: Write out Column Visibility somehow too
+    subType.write(writer, name, f);
+    if(f instanceof RestrictedField) {
+      writer.writeStr("cv", ((RestrictedField)f).getColumnVisibility().toString(), false);
     }
+  }
 
-    @Override
-    public SortField getSortField(
+  @Override
+  public SortField getSortField(
       SchemaField field, boolean top) {
-        return subType.getSortField(field, top);
-    }
+    return subType.getSortField(field, top);
+  }
 
-    @Override
-    public Query getFieldQuery(
+  @Override
+  public Query getFieldQuery(
       QParser parser, SchemaField field, String externalVal) {
-        String auth = null;
-        SolrParams localParams = parser.getLocalParams();
-        if(localParams != null) {
-            auth = localParams.get("auth");
-        }
-
-        SolrParams params = parser.getParams();
-        if(params != null) {
-            auth = params.get("auth");
-        }
-        Query fieldQuery = subType.getFieldQuery(parser, field, externalVal);
-        return new AuthQuery(fieldQuery, auth != null ? new Authorizations(auth.split(",")) : Authorizations.EMPTY);
+    String auth = null;
+    SolrParams localParams = parser.getLocalParams();
+    if (localParams != null) {
+      auth = localParams.get("auth");
     }
 
-    @Override
-    public Analyzer getIndexAnalyzer() {
-        return subType.getIndexAnalyzer();
+    SolrParams params = parser.getParams();
+    if (params != null) {
+      auth = params.get("auth");
     }
+    Query fieldQuery = subType.getFieldQuery(parser, field, externalVal);
+    return new AuthQuery(fieldQuery, auth != null ? new Authorizations(auth.split(",")) : Authorizations.EMPTY);
+  }
 
-    @Override
-    public Analyzer getQueryAnalyzer() {
-        return subType.getQueryAnalyzer();
-    }
+  @Override
+  public Analyzer getIndexAnalyzer() {
+    return subType.getIndexAnalyzer();
+  }
 
-    @Override
-    public Analyzer getAnalyzer() {
-        return subType.getAnalyzer();
-    }
+  @Override
+  public Analyzer getQueryAnalyzer() {
+    return subType.getQueryAnalyzer();
+  }
 
-    @Override
-    public Similarity getSimilarity() {
-        return subType.getSimilarity();
-    }
+  @Override
+  public Analyzer getAnalyzer() {
+    return subType.getAnalyzer();
+  }
 
-    @Override
-    public SimilarityFactory getSimilarityFactory() {
-        return subType.getSimilarityFactory();
-    }
+  @Override
+  public Similarity getSimilarity() {
+    return subType.getSimilarity();
+  }
 
-    @Override
-    public FieldType.NumericType getNumericType() {
-        return subType.getNumericType();
-    }
+  @Override
+  public SimilarityFactory getSimilarityFactory() {
+    return subType.getSimilarityFactory();
+  }
 
-    @Override
-    public void setSimilarity(
+  @Override
+  public FieldType.NumericType getNumericType() {
+    return subType.getNumericType();
+  }
+
+  @Override
+  public void setSimilarity(
       SimilarityFactory similarityFactory) {
-        subType.setSimilarity(similarityFactory);
-    }
+    subType.setSimilarity(similarityFactory);
+  }
 
-    @Override
-    public String getPostingsFormat() {
-        return subType.getPostingsFormat();
-    }
+  @Override
+  public String getPostingsFormat() {
+    return subType.getPostingsFormat();
+  }
 
 }
