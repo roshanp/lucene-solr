@@ -65,8 +65,8 @@ public class RestrictedSolrFieldType extends AbstractSubTypeFieldType {
         int visibilityLoc = val_str.lastIndexOf(VISIBILITY_UPPER_BOUND);
         if(visibilityLoc != -1) {
           //includes column visibility
-          val_str = val_str.substring(0, visibilityLoc);
           String cv_str = val_str.substring(visibilityLoc + 1, val_str.length() - 1);
+          val_str = val_str.substring(0, visibilityLoc);
           try {
             cv = new ColumnVisibility(cv_str);
           } catch(PatternSyntaxException pe) {
