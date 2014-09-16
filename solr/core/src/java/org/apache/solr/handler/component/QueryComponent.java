@@ -34,8 +34,7 @@ import java.util.regex.Pattern;
 
 import com.lucure.core.AuthorizationsHolder;
 import com.lucure.core.query.AuthQuery;
-import org.apache.accumulo.core.security.Authorizations;
-import org.apache.commons.lang.StringUtils;
+import com.lucure.core.security.Authorizations;
 import org.apache.lucene.index.AtomicReaderContext;
 import org.apache.lucene.index.IndexReaderContext;
 import org.apache.lucene.index.ReaderUtil;
@@ -101,6 +100,7 @@ import org.apache.solr.search.grouping.endresulttransformer.EndResultTransformer
 import org.apache.solr.search.grouping.endresulttransformer.GroupedEndResultTransformer;
 import org.apache.solr.search.grouping.endresulttransformer.MainEndResultTransformer;
 import org.apache.solr.search.grouping.endresulttransformer.SimpleEndResultTransformer;
+import org.apache.solr.util.AuthSolrParamsUtil;
 import org.apache.solr.util.SolrPluginUtils;
 import java.util.Collections;
 import java.util.Comparator;
@@ -154,13 +154,7 @@ public class QueryComponent extends SearchComponent
         q = new BooleanQuery();
       }
 
-      //Get passed in authorizations
-      String auth = params.get("auth");
-      Authorizations authorizations = Authorizations.EMPTY;
-      if(auth != null) {
-        authorizations = new Authorizations(auth.split(","));
-      }
-
+      Authorizations authorizations = AuthSolrParamsUtil.authsFromParams(params);
       rb.setQuery(new AuthQuery(q, authorizations));
       AuthorizationsHolder.threadAuthorizations.set(new AuthorizationsHolder(authorizations));
 

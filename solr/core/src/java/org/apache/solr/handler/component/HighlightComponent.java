@@ -18,6 +18,8 @@
 package org.apache.solr.handler.component;
 
 import com.google.common.base.Objects;
+import com.lucure.core.query.AuthQuery;
+import com.lucure.core.security.Authorizations;
 import org.apache.lucene.search.Query;
 import org.apache.solr.common.SolrException;
 import org.apache.solr.common.params.CommonParams;
@@ -35,6 +37,7 @@ import org.apache.solr.search.QParser;
 import org.apache.solr.search.QParserPlugin;
 import org.apache.solr.search.QueryParsing;
 import org.apache.solr.search.SyntaxError;
+import org.apache.solr.util.AuthSolrParamsUtil;
 import org.apache.solr.util.SolrPluginUtils;
 import org.apache.solr.util.plugin.PluginInfoInitialized;
 import org.apache.solr.util.plugin.SolrCoreAware;
@@ -77,7 +80,8 @@ public class HighlightComponent extends SearchComponent implements PluginInfoIni
       if(hlq != null){
         try {
           QParser parser = QParser.getParser(hlq, hlparser, rb.req);
-          rb.setHighlightQuery(parser.getHighlightQuery());
+          Authorizations authorizations = AuthSolrParamsUtil.authsFromParams(params);
+          rb.setHighlightQuery(new AuthQuery(parser.getHighlightQuery(), authorizations));
         } catch (SyntaxError e) {
           throw new SolrException(SolrException.ErrorCode.BAD_REQUEST, e);
         }
@@ -123,13 +127,15 @@ public class HighlightComponent extends SearchComponent implements PluginInfoIni
         if (rb.getQparser() != null) {
           try {
             highlightQuery = rb.getQparser().getHighlightQuery();
-            rb.setHighlightQuery( highlightQuery );
+            Authorizations authorizations = AuthSolrParamsUtil.authsFromParams(params);
+            rb.setHighlightQuery(new AuthQuery(highlightQuery, authorizations));
           } catch (Exception e) {
             throw new SolrException(SolrException.ErrorCode.BAD_REQUEST, e);
           }
         } else {
           highlightQuery = rb.getQuery();
-          rb.setHighlightQuery( highlightQuery );
+          Authorizations authorizations = AuthSolrParamsUtil.authsFromParams(params);
+          rb.setHighlightQuery(new AuthQuery(highlightQuery, authorizations));
         }
       }
       
