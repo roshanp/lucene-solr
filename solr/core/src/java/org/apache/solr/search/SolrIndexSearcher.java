@@ -68,7 +68,6 @@ import org.apache.lucene.search.DocIdSetIterator;
 import org.apache.lucene.search.Explanation;
 import org.apache.lucene.search.FieldDoc;
 import org.apache.lucene.search.Filter;
-import org.apache.lucene.search.IndexSearcher;
 import org.apache.lucene.search.MatchAllDocsQuery;
 import org.apache.lucene.search.Query;
 import org.apache.lucene.search.ScoreDoc;
@@ -109,7 +108,7 @@ import org.apache.solr.update.SolrIndexConfig;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import com.lucure.core.LucureIndexSearcher;
+import com.lucure.core.index.LucureIndexSearcher;
 
 
 /**
@@ -136,7 +135,8 @@ public class SolrIndexSearcher extends LucureIndexSearcher implements Closeable,
   private long openTime = System.currentTimeMillis();
   private long registerTime = 0;
   private long warmupTime = 0;
-  private final DirectoryReader reader;
+  private final IndexReader reader;
+  private final DirectoryReader directoryReader;
   private final boolean closeReader;
 
   private final int queryResultWindowSize;
@@ -225,11 +225,18 @@ public class SolrIndexSearcher extends LucureIndexSearcher implements Closeable,
   }
 
   public SolrIndexSearcher(SolrCore core, String path, IndexSchema schema, SolrIndexConfig config, String name, DirectoryReader r, boolean closeReader, boolean enableCache, boolean reserveDirectory, DirectoryFactory directoryFactory) throws IOException {
-    super(r == null ? getReader(core, config, directoryFactory, path) : r);
+    this(core, path, schema, config, name, r == null ? getReader(core, config, directoryFactory, path) : r, true, false, directoryFactory);
+  }
+
+  private SolrIndexSearcher(SolrCore core, String path, IndexSchema schema, SolrIndexConfig config, String name, DirectoryReader r, boolean closeReader, boolean reserveDirectory, DirectoryFactory directoryFactory) throws IOException {
+    super(r);
+
+    this.directoryReader = r;
+
 
     this.path = path;
     this.directoryFactory = directoryFactory;
-    this.reader = (DirectoryReader) super.readerContext.reader();
+    this.reader = super.readerContext.reader();
     this.atomicReader = SlowCompositeReaderWrapper.wrap(this.reader);
     this.core = core;
     this.schema = schema;
@@ -239,11 +246,11 @@ public class SolrIndexSearcher extends LucureIndexSearcher implements Closeable,
     if (directoryFactory.searchersReserveCommitPoints()) {
       // reserve commit point for life of searcher
       core.getDeletionPolicy().saveCommitPoint(
-          reader.getIndexCommit().getGeneration());
+          getIndexReader().getIndexCommit().getGeneration());
     }
-    
+
     Directory dir = getIndexReader().directory();
-    
+
     this.reserveDirectory = reserveDirectory;
     this.createdDirectory = r == null;
     if (reserveDirectory) {
@@ -259,7 +266,7 @@ public class SolrIndexSearcher extends LucureIndexSearcher implements Closeable,
     queryResultMaxDocsCached = solrConfig.queryResultMaxDocsCached;
     useFilterForSortedQuery = solrConfig.useFilterForSortedQuery;
     enableLazyFieldLoading = solrConfig.enableLazyFieldLoading;
-    
+
     cachingEnabled=false; //TODO: Caching is always false since it could bypass authorizations currently
     if (cachingEnabled) {
       ArrayList<SolrCache> clist = new ArrayList<>();
@@ -295,18 +302,18 @@ public class SolrIndexSearcher extends LucureIndexSearcher implements Closeable,
       cacheMap = noGenericCaches;
       cacheList= noCaches;
     }
-    
+
     // TODO: This option has been dead/noop since 3.1, should we re-enable it?
 //    optimizer = solrConfig.filtOptEnabled ? new LuceneQueryOptimizer(solrConfig.filtOptCacheSize,solrConfig.filtOptThreshold) : null;
     optimizer = null;
-    
+
     fieldNames = new HashSet<>();
     fieldInfos = atomicReader.getFieldInfos();
     for(FieldInfo fieldInfo : fieldInfos) {
       fieldNames.add(fieldInfo.name);
     }
 
-    // do this at the end since an exception in the constructor means we won't close    
+    // do this at the end since an exception in the constructor means we won't close
     numOpens.incrementAndGet();
   }
 
@@ -339,8 +346,7 @@ public class SolrIndexSearcher extends LucureIndexSearcher implements Closeable,
   
   @Override
   public final DirectoryReader getIndexReader() {
-    assert reader == super.getIndexReader();
-    return reader; 
+    return directoryReader; 
   }
 
   /** Register sub-objects such as caches
@@ -383,7 +389,7 @@ public class SolrIndexSearcher extends LucureIndexSearcher implements Closeable,
     // can't use super.close() since it just calls reader.close() and that may only be called once
     // per reader (even if incRef() was previously called).
     
-    long cpg = reader.getIndexCommit().getGeneration();
+    long cpg = getIndexReader().getIndexCommit().getGeneration();
     try {
       if (closeReader) reader.decRef();
     } catch (Exception e) {
@@ -2214,8 +2220,8 @@ public class SolrIndexSearcher extends LucureIndexSearcher implements Closeable,
     lst.add("maxDoc", reader.maxDoc());
     lst.add("deletedDocs", reader.maxDoc() - reader.numDocs());
     lst.add("reader", reader.toString());
-    lst.add("readerDir", reader.directory());
-    lst.add("indexVersion", reader.getVersion());
+    lst.add("readerDir", getIndexReader().directory());
+    lst.add("indexVersion", getIndexReader().getVersion());
     lst.add("openedAt", new Date(openTime));
     if (registerTime!=0) lst.add("registeredAt", new Date(registerTime));
     lst.add("warmupTime", warmupTime);
