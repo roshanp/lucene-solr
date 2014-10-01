@@ -29,7 +29,7 @@
   <!-- !!! RELEASE MANAGER: Change version numbers only here: !!! -->
   
   <!-- The base version of the next release (including bugfix number, e.g., x.y.z+): -->
-  <property name="version.base" value="4.10.0"/>
+  <property name="version.base" value="4.10.1"/>
   
   <!-- !!! RELEASE MANAGER: Don't change anything after this line! !!! -->
 
@@ -1252,8 +1252,8 @@ ant test -Dtests.dups=N ...
 # master seed. You can combine beasting with any other parameter,
 # just replace "test" with "beast" and give -Dbeast.iters=P
 # (P >> 1).
-ant test -Dtests.dups=N -Dtests.iters=M -Dbeast.iters=P \
-  -Dtestcase=ClassName beast
+ant beast -Dtests.dups=N -Dtests.iters=M -Dbeast.iters=P \
+  -Dtestcase=ClassName
 
 #
 # Test groups. ----------------------------------------------------

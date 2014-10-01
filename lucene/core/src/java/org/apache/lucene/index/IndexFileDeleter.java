@@ -27,12 +27,14 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.regex.Matcher;
 
 import org.apache.lucene.store.AlreadyClosedException;
 import org.apache.lucene.store.Directory;
 import org.apache.lucene.store.NoSuchDirectoryException;
 import org.apache.lucene.util.CollectionUtil;
+import org.apache.lucene.util.IOUtils;
 import org.apache.lucene.util.InfoStream;
 
 /*
@@ -109,7 +111,6 @@ final class IndexFileDeleter implements Closeable {
    *  infoStream is enabled */
   public static boolean VERBOSE_REF_COUNTS = false;
 
-  // Used only for assert
   private final IndexWriter writer;
 
   // called only from assert
@@ -126,6 +127,7 @@ final class IndexFileDeleter implements Closeable {
    */
   public IndexFileDeleter(Directory directory, IndexDeletionPolicy policy, SegmentInfos segmentInfos,
                           InfoStream infoStream, IndexWriter writer, boolean initialIndexExists) throws IOException {
+    Objects.requireNonNull(writer);
     this.infoStream = infoStream;
     this.writer = writer;
 
@@ -150,7 +152,7 @@ final class IndexFileDeleter implements Closeable {
       // it means the directory is empty, so ignore it.
       files = new String[0];
     }
-    
+
     if (currentSegmentsFile != null) {
       Matcher m = IndexFileNames.CODEC_FILE_PATTERN.matcher("");
       for (String fileName : files) {
@@ -236,6 +238,9 @@ final class IndexFileDeleter implements Closeable {
     // We keep commits list in sorted order (oldest to newest):
     CollectionUtil.timSort(commits);
 
+    // refCounts only includes "normal" filenames (does not include segments.gen, write.lock)
+    inflateGens(segmentInfos, refCounts.keySet(), infoStream);
+
     // Now delete anything with ref count at 0.  These are
     // presumably abandoned files eg due to crash of
     // IndexWriter.
@@ -263,11 +268,88 @@ final class IndexFileDeleter implements Closeable {
     deleteCommits();
   }
 
+  /** Set all gens beyond what we currently see in the directory, to avoid double-write in cases where the previous IndexWriter did not
+   *  gracefully close/rollback (e.g. os/machine crashed or lost power). */
+  static void inflateGens(SegmentInfos infos, Collection<String> files, InfoStream infoStream) {
+
+    long maxSegmentGen = Long.MIN_VALUE;
+    int maxSegmentName = Integer.MIN_VALUE;
+
+    // Confusingly, this is the union of liveDocs, field infos, doc values
+    // (and maybe others, in the future) gens.  This is somewhat messy,
+    // since it means DV updates will suddenly write to the next gen after
+    // live docs' gen, for example, but we don't have the APIs to ask the
+    // codec which file is which:
+    Map<String,Long> maxPerSegmentGen = new HashMap<>();
+
+    for(String fileName : files) {
+      if (fileName.equals(IndexFileNames.SEGMENTS_GEN) || fileName.equals(IndexWriter.WRITE_LOCK_NAME)) {
+        // do nothing
+      } else if (fileName.startsWith(IndexFileNames.SEGMENTS)) {
+        try {
+          maxSegmentGen = Math.max(SegmentInfos.generationFromSegmentsFileName(fileName), maxSegmentGen);
+        } catch (NumberFormatException ignore) {
+          // trash file: we have to handle this since we allow anything starting with 'segments' here
+        }
+      } else {
+        String segmentName = IndexFileNames.parseSegmentName(fileName);
+        assert segmentName.startsWith("_"): "wtf? file=" + fileName;
+
+        maxSegmentName = Math.max(maxSegmentName, Integer.parseInt(segmentName.substring(1), Character.MAX_RADIX));
+
+        Long curGen = maxPerSegmentGen.get(segmentName);
+        if (curGen == null) {
+          curGen = 0L;
+        }
+
+        try {
+          curGen = Math.max(curGen, IndexFileNames.parseGeneration(fileName));
+        } catch (NumberFormatException ignore) {
+          // trash file: we have to handle this since codec regex is only so good
+        }
+        maxPerSegmentGen.put(segmentName, curGen);
+      }
+    }
+
+    // Generation is advanced before write:
+    infos.setGeneration(Math.max(infos.getGeneration(), maxSegmentGen));
+    if (infos.counter < 1+maxSegmentName) {
+      if (infoStream.isEnabled("IFD")) {
+        infoStream.message("IFD", "init: inflate infos.counter to " + (1+maxSegmentName) + " vs current=" + infos.counter);
+      }
+      infos.counter = 1+maxSegmentName;
+    }
+
+    for(SegmentCommitInfo info : infos) {
+      Long gen = maxPerSegmentGen.get(info.info.name);
+      assert gen != null;
+      long genLong = gen;
+      if (info.getNextWriteDelGen() < genLong+1) {
+        if (infoStream.isEnabled("IFD")) {
+          infoStream.message("IFD", "init: seg=" + info.info.name + " set nextWriteDelGen=" + (genLong+1) + " vs current=" + info.getNextWriteDelGen());
+        }
+        info.setNextWriteDelGen(genLong+1);
+      }
+      if (info.getNextWriteFieldInfosGen() < genLong+1) {
+        if (infoStream.isEnabled("IFD")) {
+          infoStream.message("IFD", "init: seg=" + info.info.name + " set nextWriteFieldInfosGen=" + (genLong+1) + " vs current=" + info.getNextWriteFieldInfosGen());
+        }
+        info.setNextWriteFieldInfosGen(genLong+1);
+      }
+      if (info.getNextWriteDocValuesGen() < genLong+1) {
+        if (infoStream.isEnabled("IFD")) {
+          infoStream.message("IFD", "init: seg=" + info.info.name + " set nextWriteDocValuesGen=" + (genLong+1) + " vs current=" + info.getNextWriteDocValuesGen());
+        }
+        info.setNextWriteDocValuesGen(genLong+1);
+      }
+    }
+  }
+
   private void ensureOpen() throws AlreadyClosedException {
-    if (writer == null) {
-      throw new AlreadyClosedException("this IndexWriter is closed");
-    } else {
-      writer.ensureOpen(false);
+    writer.ensureOpen(false);
+    // since we allow 'closing' state, we must still check this, we could be closing because we hit e.g. OOM
+    if (writer.tragedy != null) {
+      throw new AlreadyClosedException("refusing to delete any files: this IndexWriter hit an unrecoverable exception", writer.tragedy);
     }
   }
 
@@ -287,16 +369,24 @@ final class IndexFileDeleter implements Closeable {
 
       // First decref all files that had been referred to by
       // the now-deleted commits:
+      Throwable firstThrowable = null;
       for(int i=0;i<size;i++) {
         CommitPoint commit = commitsToDelete.get(i);
         if (infoStream.isEnabled("IFD")) {
           infoStream.message("IFD", "deleteCommits: now decRef commit \"" + commit.getSegmentsFileName() + "\"");
         }
-        for (final String file : commit.files) {
-          decRef(file);
+        try {
+          decRef(commit.files);
+        } catch (Throwable t) {
+          if (firstThrowable == null) {
+            firstThrowable = t;
+          }
         }
       }
       commitsToDelete.clear();
+
+      // NOTE: does nothing if firstThrowable is null
+      IOUtils.reThrow(firstThrowable);
 
       // Now compact commits to remove deleted ones (preserving the sort):
       size = commits.size();
@@ -376,8 +466,11 @@ final class IndexFileDeleter implements Closeable {
     assert locked();
 
     if (!lastFiles.isEmpty()) {
-      decRef(lastFiles);
-      lastFiles.clear();
+      try {
+        decRef(lastFiles);
+      } finally {
+        lastFiles.clear();
+      }
     }
 
     deletePendingFiles();
@@ -411,10 +504,17 @@ final class IndexFileDeleter implements Closeable {
       deletable = null;
       int size = oldDeletable.size();
       for(int i=0;i<size;i++) {
+        String fileName = oldDeletable.get(i);
         if (infoStream.isEnabled("IFD")) {
-          infoStream.message("IFD", "delete pending file " + oldDeletable.get(i));
+          infoStream.message("IFD", "delete pending file " + fileName);
         }
-        deleteFile(oldDeletable.get(i));
+        RefCount rc = refCounts.get(fileName);
+        if (rc != null && rc.count > 0) {
+          // LUCENE-5904: should never happen!  This means we are about to pending-delete a referenced index file
+          assert false: "fileName=" + fileName + " is in pending delete list but also has refCount=" + rc.count;
+        } else {
+          deleteFile(fileName);
+        }
       }
     }
   }
@@ -467,8 +567,11 @@ final class IndexFileDeleter implements Closeable {
       deleteCommits();
     } else {
       // DecRef old files from the last checkpoint, if any:
-      decRef(lastFiles);
-      lastFiles.clear();
+      try {
+        decRef(lastFiles);
+      } finally {
+        lastFiles.clear();
+      }
 
       // Save files so we can decr on next checkpoint/commit:
       lastFiles.addAll(segmentInfos.files(directory, false));
@@ -506,10 +609,34 @@ final class IndexFileDeleter implements Closeable {
     rc.IncRef();
   }
 
+  /** Decrefs all provided files, even on exception; throws first exception hit, if any. */
   void decRef(Collection<String> files) throws IOException {
     assert locked();
+    Throwable firstThrowable = null;
     for(final String file : files) {
-      decRef(file);
+      try {
+        decRef(file);
+      } catch (Throwable t) {
+        if (firstThrowable == null) {
+          // Save first exception and throw it in the end, but be sure to finish decRef all files
+          firstThrowable = t;
+        }
+      }
+    }
+
+    // NOTE: does nothing if firstThrowable is null
+    IOUtils.reThrow(firstThrowable);
+  }
+
+  /** Decrefs all provided files, ignoring any exceptions hit; call this if
+   *  you are already handling an exception. */
+  void decRefWhileHandlingException(Collection<String> files) throws IOException {
+    assert locked();
+    for(final String file : files) {
+      try {
+        decRef(file);
+      } catch (Throwable t) {
+      }
     }
   }
 
@@ -524,16 +651,17 @@ final class IndexFileDeleter implements Closeable {
     if (0 == rc.DecRef()) {
       // This file is no longer referenced by any past
       // commit points nor by the in-memory SegmentInfos:
-      deleteFile(fileName);
-      refCounts.remove(fileName);
+      try {
+        deleteFile(fileName);
+      } finally {
+        refCounts.remove(fileName);
+      }
     }
   }
 
   void decRef(SegmentInfos segmentInfos) throws IOException {
     assert locked();
-    for (final String file : segmentInfos.files(directory, false)) {
-      decRef(file);
-    }
+    decRef(segmentInfos.files(directory, false));
   }
 
   public boolean exists(String fileName) {

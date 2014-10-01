@@ -152,6 +152,7 @@ public final class SegmentInfos implements Cloneable, Iterable<SegmentCommitInfo
   public static final int FORMAT_SEGMENTS_GEN_CURRENT = FORMAT_SEGMENTS_GEN_CHECKSUM;
 
   /** Used to name new segments. */
+  // TODO: should this be a long ...?
   public int counter;
   
   /** Counts how often the index has been changed.  */
@@ -298,12 +299,7 @@ public final class SegmentInfos implements Cloneable, Iterable<SegmentCommitInfo
     } catch (Throwable t) {
       // It's OK if we fail to write this file since it's
       // used only as one of the retry fallbacks.
-      try {
-        dir.deleteFile(IndexFileNames.SEGMENTS_GEN);
-      } catch (Throwable t2) {
-        // Ignore; this file is only used in a retry
-        // fallback on init.
-      }
+      IOUtils.deleteFilesIgnoringExceptions(dir, IndexFileNames.SEGMENTS_GEN);
     }
   }
 
@@ -514,7 +510,13 @@ public final class SegmentInfos implements Cloneable, Iterable<SegmentCommitInfo
         // If this segment is pre-4.x, perform a one-time
         // "ugprade" to write the .si file for it:
         Version version = si.getVersion();
-        if (version == null || version.onOrAfter(Version.LUCENE_4_0_0) == false) {
+        if (version == null || version.onOrAfter(Version.LUCENE_4_0_0_ALPHA) == false) {
+
+          // Defensive check: we are about to write this SI in 3.x format, dropping all codec information, etc.
+          // so it had better be a 3.x segment or you will get very confusing errors later.
+          if ((si.getCodec() instanceof Lucene3xCodec) == false) {
+            throw new IllegalStateException("cannot write 3x SegmentInfo unless codec is Lucene3x (got: " + si.getCodec() + ")");
+          }
 
           if (!segmentWasUpgraded(directory, si)) {
 
@@ -550,21 +552,13 @@ public final class SegmentInfos implements Cloneable, Iterable<SegmentCommitInfo
         // but suppress any exception:
         IOUtils.closeWhileHandlingException(segnOutput);
 
-        for(String fileName : upgradedSIFiles) {
-          try {
-            directory.deleteFile(fileName);
-          } catch (Throwable t) {
-            // Suppress so we keep throwing the original exception
-          }
+        for (String fileName : upgradedSIFiles) {
+          IOUtils.deleteFilesIgnoringExceptions(directory, fileName);
         }
 
-        try {
-          // Try not to leave a truncated segments_N file in
-          // the index:
-          directory.deleteFile(segmentsFileName);
-        } catch (Throwable t) {
-          // Suppress so we keep throwing the original exception
-        }
+        // Try not to leave a truncated segments_N file in
+        // the index:
+        IOUtils.deleteFilesIgnoringExceptions(directory, segmentsFileName);
       }
     }
   }
@@ -589,9 +583,14 @@ public final class SegmentInfos implements Cloneable, Iterable<SegmentCommitInfo
     return false;
   }
 
-
   @Deprecated
   public static String write3xInfo(Directory dir, SegmentInfo si, IOContext context) throws IOException {
+
+    // Defensive check: we are about to write this SI in 3.x format, dropping all codec information, etc.
+    // so it had better be a 3.x segment or you will get very confusing errors later.
+    if ((si.getCodec() instanceof Lucene3xCodec) == false) {
+      throw new IllegalStateException("cannot write 3x SegmentInfo unless codec is Lucene3x (got: " + si.getCodec() + ")");
+    }
 
     // NOTE: this is NOT how 3.x is really written...
     String fileName = IndexFileNames.segmentFileName(si.name, "", Lucene3xSegmentInfoFormat.UPGRADED_SI_EXTENSION);
@@ -601,12 +600,6 @@ public final class SegmentInfos implements Cloneable, Iterable<SegmentCommitInfo
     boolean success = false;
     IndexOutput output = dir.createOutput(fileName, context);
     try {
-      // we are about to write this SI in 3.x format, dropping all codec information, etc.
-      // so it had better be a 3.x segment or you will get very confusing errors later.
-      if ((si.getCodec() instanceof Lucene3xCodec) == false) {
-        throw new IllegalStateException("cannot write 3x SegmentInfo unless codec is Lucene3x (got: " + si.getCodec() + ")");
-      }
-
       CodecUtil.writeHeader(output, Lucene3xSegmentInfoFormat.UPGRADED_SI_CODEC_NAME, 
                                     Lucene3xSegmentInfoFormat.UPGRADED_SI_VERSION_CURRENT);
       // Write the Lucene version that created this segment, since 3.1
@@ -745,7 +738,7 @@ public final class SegmentInfos implements Cloneable, Iterable<SegmentCommitInfo
    * commit finishing.
    */
   public abstract static class FindSegmentsFile {
-    
+
     final Directory directory;
 
     /** Sole constructor. */ 
@@ -917,6 +910,9 @@ public final class SegmentInfos implements Cloneable, Iterable<SegmentCommitInfo
           return v;
         } catch (IOException err) {
 
+          // TODO: we should use the new IO apis in Java7 to get better exceptions on why the open failed.  E.g. we don't want to fall back
+          // if the open failed for a "different" reason (too many open files, access denied) than "the commit was in progress"
+
           // Save the original root cause:
           if (exc == null) {
             exc = err;
@@ -982,6 +978,11 @@ public final class SegmentInfos implements Cloneable, Iterable<SegmentCommitInfo
     generation = other.generation;
   }
 
+  void setGeneration(long generation) {
+    this.generation = generation;
+    this.lastGeneration = generation;
+  }
+
   final void rollbackCommit(Directory dir) {
     if (pendingSegnOutput != null) {
       // Suppress so we keep throwing the original exception
@@ -1042,11 +1043,13 @@ public final class SegmentInfos implements Cloneable, Iterable<SegmentCommitInfo
     return files;
   }
 
-  final void finishCommit(Directory dir) throws IOException {
+  /** Returns the committed segments_N filename. */
+  final String finishCommit(Directory dir) throws IOException {
     if (pendingSegnOutput == null) {
       throw new IllegalStateException("prepareCommit was not called");
     }
     boolean success = false;
+    final String dest;
     try {
       CodecUtil.writeFooter(pendingSegnOutput);
       success = true;
@@ -1087,16 +1090,14 @@ public final class SegmentInfos implements Cloneable, Iterable<SegmentCommitInfo
       success = true;
     } finally {
       if (!success) {
-        try {
-          dir.deleteFile(fileName);
-        } catch (Throwable t) {
-          // Suppress so we keep throwing the original exception
-        }
+        IOUtils.deleteFilesIgnoringExceptions(dir, fileName);
       }
     }
 
     lastGeneration = generation;
     writeSegmentsGen(dir, generation);
+
+    return fileName;
   }
 
   /** Writes & syncs to the Directory dir, taking care to
